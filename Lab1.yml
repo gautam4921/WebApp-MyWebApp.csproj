@@ -1,0 +1,75 @@
+trigger:
+- master
+
+pool:
+  vmImage: windows-latest
+
+variables:
+  buildConfiguration: Release
+  project: Lab1MVCCoreApp/MyWebApp/MyWebApp/MyWebApp.csproj
+  # Create these variables in Azure Pipelines; authorize the service connection for this pipeline.
+
+jobs:
+- job: Build
+  displayName: Build and package
+  steps:
+  - task: UseDotNet@2
+    inputs:
+      packageType: sdk
+      version: 10.x
+
+  - task: DotNetCoreCLI@2
+    displayName: Restore
+    inputs:
+      command: restore
+      projects: '$(project)'
+
+  - task: DotNetCoreCLI@2
+    displayName: Build
+    inputs:
+      command: build
+      projects: '$(project)'
+      arguments: '--configuration $(buildConfiguration) --no-restore'
+
+  - task: DotNetCoreCLI@2
+    displayName: Publish
+    inputs:
+      command: publish
+      publishWebProjects: false
+      projects: '$(project)'
+      arguments: '--configuration $(buildConfiguration) --no-build --output $(Build.ArtifactStagingDirectory)/publish'
+      zipAfterPublish: false
+
+  - task: ArchiveFiles@2
+    displayName: Package published app
+    inputs:
+      rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/publish'
+      includeRootFolder: false
+      archiveType: zip
+      archiveFile: '$(Build.ArtifactStagingDirectory)/MyWebApp.zip'
+      replaceExistingArchive: true
+
+  - task: PublishPipelineArtifact@1
+    displayName: Publish deployment artifact
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/MyWebApp.zip'
+      artifact: drop
+
+- deployment: DeployWebApp
+  displayName: Deploy to Azure App Service
+  dependsOn: Build
+  environment: Production
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+        - download: current
+          artifact: drop
+
+        - task: AzureWebApp@1
+          displayName: Deploy to Azure App Service
+          inputs:
+            azureSubscription: '$(azureServiceConnection)'
+            appType: webApp
+            appName: '$(azureWebAppName)'
+            package: '$(Pipeline.Workspace)/drop/MyWebApp.zip'
