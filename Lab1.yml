@@ -1,75 +1,201 @@
+
 trigger:
-- main
+  branches:
+    include:
+      - main
 
 pool:
-  vmImage: windows-latest
+  vmImage: 'windows-latest'
 
 variables:
-  buildConfiguration: Release
-  project: Lab1MVCCoreApp/MyWebApp/MyWebApp/MyWebApp.csproj
-  # Create these variables in Azure Pipelines; authorize the service connection for this pipeline.
+  buildConfiguration: 'Release'
+  projectPath: 'Lab1MVCCoreApp/MyWebApp/MyWebApp/MyWebApp.csproj'
+  azureServiceConnection: 'sc-azure-dev'
+  appName: 'lab1-mywebapp-dev'
+  resourceGroup: 'azvmsouthindia'
 
-jobs:
-- job: Build
-  displayName: Build and package
-  steps:
-  - task: UseDotNet@2
-    inputs:
-      packageType: sdk
-      version: 10.x
+stages:
+  # =====================================================
+  # STAGE 1: BUILD, PUBLISH AND PACKAGE
+  # =====================================================
+  - stage: Build
+    displayName: 'Build and Package MyWebApp'
 
-  - task: DotNetCoreCLI@2
-    displayName: Restore
-    inputs:
-      command: restore
-      projects: '$(project)'
+    jobs:
+      - job: BuildWebApp
+        displayName: 'Publish ASP.NET Core MVC application'
 
-  - task: DotNetCoreCLI@2
-    displayName: Build
-    inputs:
-      command: build
-      projects: '$(project)'
-      arguments: '--configuration $(buildConfiguration) --no-restore'
-
-  - task: DotNetCoreCLI@2
-    displayName: Publish
-    inputs:
-      command: publish
-      publishWebProjects: false
-      projects: '$(project)'
-      arguments: '--configuration $(buildConfiguration) --no-build --output $(Build.ArtifactStagingDirectory)/publish'
-      zipAfterPublish: false
-
-  - task: ArchiveFiles@2
-    displayName: Package published app
-    inputs:
-      rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/publish'
-      includeRootFolder: false
-      archiveType: zip
-      archiveFile: '$(Build.ArtifactStagingDirectory)/MyWebApp.zip'
-      replaceExistingArchive: true
-
-  - task: PublishPipelineArtifact@1
-    displayName: Publish deployment artifact
-    inputs:
-      targetPath: '$(Build.ArtifactStagingDirectory)/MyWebApp.zip'
-      artifact: drop
-
-- deployment: DeployWebApp
-  displayName: Deploy to Azure App Service
-  dependsOn: Build
-  environment: Production
-  strategy:
-    runOnce:
-      deploy:
         steps:
-        - download: current
-          artifact: drop
+          - checkout: self
+            clean: true
 
-        - task: AzureWebApp@1
-          displayName: Deploy to Azure App Service
-          inputs:
-            azureSubscription: '$(azureServiceConnection)'
-            appType: webApp
-            appName: '$(azureWebAppName)'
-            package: '$(Pipeline.Workspace)/drop/MyWebApp.zip'
+          - task: UseDotNet@2
+            displayName: 'Install .NET 10 SDK'
+            inputs:
+              packageType: 'sdk'
+              version: '10.x'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore NuGet packages'
+            inputs:
+              command: 'restore'
+              projects: '$(projectPath)'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Build application'
+            inputs:
+              command: 'build'
+              projects: '$(projectPath)'
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Publish application'
+            inputs:
+              command: 'publish'
+              publishWebProjects: false
+              projects: '$(projectPath)'
+              arguments: >-
+                --configuration $(buildConfiguration)
+                --output $(Build.ArtifactStagingDirectory)/publish
+                --no-restore
+              zipAfterPublish: false
+              modifyOutputPath: false
+
+          # Validate published output before packaging.
+          - task: PowerShell@2
+            displayName: 'Validate published files'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $publishPath = "$(Build.ArtifactStagingDirectory)/publish"
+
+                if (!(Test-Path "$publishPath/MyWebApp.dll")) {
+                    throw "MyWebApp.dll is missing from the publish directory."
+                }
+
+                if (!(Test-Path "$publishPath/MyWebApp.runtimeconfig.json")) {
+                    throw "MyWebApp.runtimeconfig.json is missing."
+                }
+
+                Write-Host "Published application files:"
+                Get-ChildItem -Path $publishPath
+
+          # Package the contents of publish, not its parent folder.
+          - task: ArchiveFiles@2
+            displayName: 'Create deployment ZIP'
+            inputs:
+              rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/publish'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/MyWebApp.zip'
+              replaceExistingArchive: true
+
+          # Verify that the DLL is at the ZIP root.
+          - task: PowerShell@2
+            displayName: 'Validate deployment ZIP'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $zipPath = "$(Build.ArtifactStagingDirectory)/MyWebApp.zip"
+
+                if (!(Test-Path $zipPath)) {
+                    throw "Deployment ZIP was not created."
+                }
+
+                $entries = @(tar -tf $zipPath)
+
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Unable to read deployment ZIP."
+                }
+
+                $entries | Select-Object -First 40
+
+                if ($entries -notcontains "MyWebApp.dll") {
+                    throw "MyWebApp.dll is not at the root of the ZIP."
+                }
+
+                if ($entries -notcontains "MyWebApp.runtimeconfig.json") {
+                    throw "Runtime configuration is missing from the ZIP."
+                }
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish deployment artifact'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/MyWebApp.zip'
+              artifact: 'drop'
+              publishLocation: 'pipeline'
+
+  # =====================================================
+  # STAGE 2: DEPLOY TO AZURE APP SERVICE
+  # =====================================================
+  - stage: Deploy
+    displayName: 'Deploy MyWebApp to Azure'
+    dependsOn: Build
+    condition: succeeded()
+
+    jobs:
+      - deployment: DeployWebApp
+        displayName: 'Deploy ASP.NET Core application'
+        environment: 'dev'
+
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+
+                - task: AzureWebApp@1
+                  displayName: 'Deploy ZIP to Azure App Service'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    appType: 'webAppLinux'
+                    appName: '$(appName)'
+                    package: '$(Pipeline.Workspace)/drop/MyWebApp.zip'
+                    runtimeStack: 'DOTNETCORE|10.0'
+                    deploymentMethod: 'zipDeploy'
+
+                # Verify that the deployed website responds correctly.
+                - task: PowerShell@2
+                  displayName: 'Verify website HTTP response'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      $url = "https://$(appName).azurewebsites.net"
+                      $success = $false
+
+                      for ($i = 1; $i -le 12; $i++) {
+                          try {
+                              $response = Invoke-WebRequest `
+                                  -Uri $url `
+                                  -TimeoutSec 20 `
+                                  -UseBasicParsing
+
+                              $status = [int]$response.StatusCode
+                              $content = [string]$response.Content
+
+                              Write-Host "Website URL: $url"
+                              Write-Host "HTTP status: $status"
+
+                              if ($status -ge 200 -and $status -lt 400) {
+                                  if ($content -match
+                                      'Your web app is running and waiting for your content') {
+                                      throw "Azure default page detected instead of application content."
+                                  }
+
+                                  $success = $true
+                                  break
+                              }
+                          }
+                          catch {
+                              Write-Host "Attempt $i failed: $($_.Exception.Message)"
+                          }
+
+                          Start-Sleep -Seconds 10
+                      }
+
+                      if (!$success) {
+                          throw "Website verification failed. Check App Service startup logs and deployment output."
+                      }
+
+                      Write-Host "Website returned a successful HTTP response."
