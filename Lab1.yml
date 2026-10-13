@@ -21,13 +21,16 @@ jobs:
   - task: DotNetCoreCLI@2
     displayName: Restore
     inputs:
-      command: restore
+      azureSubscription: 'sc-azure-dev'
+      command: 'restore'
       projects: '$(project)'
+      feedsToUse: 'select'
 
   - task: DotNetCoreCLI@2
     displayName: Build
     inputs:
-      command: build
+      azureSubscription: 'sc-azure-dev'
+      command: 'build'
       projects: '$(project)'
       arguments: '--configuration $(buildConfiguration) --no-restore'
 
@@ -69,7 +72,7 @@ jobs:
         - task: AzureWebApp@1
           displayName: Deploy to Azure App Service
           inputs:
-            azureSubscription: '$(azureServiceConnection)'
-            appType: webApp
-            appName: '$(azureWebAppName)'
+            azureSubscription: 'sc-azure-dev'
+            appType: 'webAppLinux'
+            appName: 'lab1-mywebapp-dev'
             package: '$(Pipeline.Workspace)/drop/MyWebApp.zip'
