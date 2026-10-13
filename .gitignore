@@ -4,3 +4,8 @@
 **/publish/
 **/*.user
 **/Properties/PublishProfiles/
+**/bin/
+**/obj/
+**/publish/
+*.zip
+*.csproj.user
